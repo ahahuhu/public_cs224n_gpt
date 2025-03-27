@@ -22,6 +22,7 @@ import fnmatch
 __version__ = "4.0.0"
 _torch_version = importlib_metadata.version("torch")
 
+# 设置huggiface transformers的各种各样的库的cache
 hf_cache_home = os.path.expanduser(os.getenv("HF_HOME", os.path.join(os.getenv("XDG_CACHE_HOME", "~/.cache"), "huggingface")))
 default_cache_path = os.path.join(hf_cache_home, "transformers")
 PYTORCH_PRETRAINED_BERT_CACHE = os.getenv("PYTORCH_PRETRAINED_BERT_CACHE", default_cache_path)

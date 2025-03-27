@@ -2,6 +2,7 @@ import torch
 
 from einops import rearrange
 from torch import nn
+import math
 
 
 class CausalSelfAttention(nn.Module):
@@ -31,10 +32,19 @@ class CausalSelfAttention(nn.Module):
     proj = rearrange(proj, 'b t h d -> b h t d')
     return proj
 
-  def attention(self, key, query, value, attention_mask):
-
+  def attention(self, key:torch.Tensor, query:torch.Tensor, value:torch.Tensor, attention_mask:torch.Tensor):
     ### YOUR CODE HERE
-    raise NotImplementedError
+    batch_size, num_attention_heads,seq_len,attention_head_size = key.shape
+    attention_matrix = torch.matmul(query,key.transpose(2,3))  # attention_matrix shape:(b h t t)
+    attention_matrix = attention_matrix/math.sqrt(attention_head_size)
+    print(attention_mask)
+    masked_attention_matrix = attention_matrix + attention_mask.expand(batch_size,num_attention_heads,seq_len,seq_len)
+    masked_attention_matrix = nn.functional.softmax(masked_attention_matrix, dim=-1)
+    masked_attention_matrix = self.dropout(masked_attention_matrix)
+    output = torch.matmul(masked_attention_matrix, value)
+    output = rearrange(output, 'b h t d -> b t (h d)')
+    return output
+    # raise NotImplementedError
 
 
   def forward(self, hidden_states, attention_mask):

@@ -215,6 +215,7 @@ def model_test_eval(dataloader, model, device):
     b_mask = b_mask.to(device)
 
     logits = model(b_ids, b_mask)
+    # .detach的作用是分离张量，返回一个新的不在该计算图中的tensor从而阻止了梯度的计算
     logits = logits.detach().cpu().numpy()
     preds = np.argmax(logits, axis=1).flatten()
 

@@ -44,13 +44,15 @@ class GPT2Model(GPTPreTrainedModel):
     self.init_weights()
 
   def embed(self, input_ids):
-    input_shape = input_ids.size()
+    input_shape = input_ids.size() # shape (b, t)
     seq_length = input_shape[1]
 
     inputs_embeds = None
 
     ### YOUR CODE HERE
-    raise NotImplementedError
+    # 进行token_id的向量化，进行positional的向量化
+    inputs_embeds = self.word_embedding(input_ids) #(b,t,d)
+    # raise NotImplementedError
 
 
     pos_ids = self.position_ids[:, :seq_length]
@@ -59,7 +61,9 @@ class GPT2Model(GPTPreTrainedModel):
     ### TODO: Use pos_ids to get position embedding from self.pos_embedding into pos_embeds.
     ###       Then, add two embeddings together; then apply dropout and return.
     ### YOUR CODE HERE
-    raise NotImplementedError
+    pos_embeds = self.pos_embedding(pos_ids) #(1, t, d)
+    # raise NotImplementedError
+    return self.embed_dropout(inputs_embeds + pos_embeds)  #(b, t, d)
 
 
   def encode(self, hidden_states, attention_mask):
