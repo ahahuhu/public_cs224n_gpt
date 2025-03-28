@@ -61,7 +61,32 @@ class AdamW(Optimizer):
                 ###
                 ###       Refer to the default project handout for more details.
                 ### YOUR CODE HERE
-                raise NotImplementedError
+                # 获取超参数
+                beta1, beta2 = group["betas"]
+                eps = group["eps"]
+                weight_decay = group["weight_decay"]
+
+                if len(state) == 0:
+                    # 初始化 每一个参数的state
+                    state["m"] = torch.zeros_like(p.data, memory_format=torch.preserve_format)
+                    state["v"] = torch.zeros_like(p.data, memory_format=torch.preserve_format)
+                    state["t"] = 0
+                m, v, t = state["m"], state["v"], state["t"]
+                t += 1
+                m_t = beta1*m + (1-beta1)*grad
+                v_t = beta2*v + (1-beta2)*grad*grad
+
+                # 偏执修正，在t较小的时候（前几轮）进行修正
+                m_hat = m_t/(1-beta1**t)
+                v_hat = v_t/(1-beta2**t)
+                
+                # 更新参数
+                p.data = p.data - alpha*m_hat/(torch.sqrt(v_hat) + eps)
+                
+                # 权重衰退（除了对参数进行更新，还会让参数进行额外的“衰减”，防止参数过大）
+                p.data = p.data*(1-alpha*weight_decay)
+                state["m"], state["v"], state["t"] = m_t, v_t, t
+                # raise NotImplementedError
 
 
         return loss

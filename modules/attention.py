@@ -46,7 +46,6 @@ class CausalSelfAttention(nn.Module):
     mask = causal_mask & attention_mask
     masked_attention_matrix = attention_matrix.masked_fill(~mask, float('-inf'))
 
-
     masked_attention_matrix = nn.functional.softmax(masked_attention_matrix, dim=-1)
     masked_attention_matrix = self.dropout(masked_attention_matrix)
     output = torch.matmul(masked_attention_matrix, value)
