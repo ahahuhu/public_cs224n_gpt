@@ -33,6 +33,7 @@ class GPT2Layer(nn.Module):
     output = dense_layer(output)
     output = dropout(output)
     output = input + output
+    
     return output
 
     raise NotImplementedError

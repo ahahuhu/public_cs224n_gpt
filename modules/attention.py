@@ -36,9 +36,17 @@ class CausalSelfAttention(nn.Module):
     ### YOUR CODE HERE
     batch_size, num_attention_heads,seq_len,attention_head_size = key.shape
     attention_matrix = torch.matmul(query,key.transpose(2,3))  # attention_matrix shape:(b h t t)
-    attention_matrix = attention_matrix/math.sqrt(attention_head_size)
-    print(attention_mask)
-    masked_attention_matrix = attention_matrix + attention_mask.expand(batch_size,num_attention_heads,seq_len,seq_len)
+    attention_matrix = attention_matrix*(1.0/math.sqrt(attention_head_size))
+
+    # 加入上三角掩码，防止模型看到未来的信息
+    causal_mask = torch.tril(torch.ones(seq_len,seq_len,device=key.device)) #'t,t'
+    causal_mask = causal_mask.view(1,1,seq_len,seq_len) #'1,1,t,t'
+    causal_mask = causal_mask.bool()  # 转化为bool（）
+    attention_mask = ~(attention_mask.bool())
+    mask = causal_mask & attention_mask
+    masked_attention_matrix = attention_matrix.masked_fill(~mask, float('-inf'))
+
+
     masked_attention_matrix = nn.functional.softmax(masked_attention_matrix, dim=-1)
     masked_attention_matrix = self.dropout(masked_attention_matrix)
     output = torch.matmul(masked_attention_matrix, value)
