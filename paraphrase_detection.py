@@ -72,7 +72,10 @@ class ParaphraseGPT(nn.Module):
 
     'Takes a batch of sentences and produces embeddings for them.'
     ### YOUR CODE HERE
-    raise NotImplementedError
+    sequence_output, last_token = self.gpt(input_ids, attention_mask).values()
+    output = self.paraphrase_detection_head(last_token)
+    return output
+    # raise NotImplementedError
 
 
 
@@ -112,6 +115,8 @@ def train(args):
   lr = args.lr
   optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
   best_dev_acc = 0
+  
+  label_map = {8505:0, 3919:1}
 
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
@@ -121,9 +126,11 @@ def train(args):
     for batch in tqdm(para_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
       # Get the input and move it to the gpu (I do not recommend training this model on CPU).
       b_ids, b_mask, labels = batch['token_ids'], batch['attention_mask'], batch['labels'].flatten()
+      # TODO: 标签值需要转化，学习F.cross_entrop()的使用方法，这个label究竟要传什么进去
       b_ids = b_ids.to(device)
       b_mask = b_mask.to(device)
       labels = labels.to(device)
+      assert torch.all((labels >= 0) & (labels < 2)), "标签超出预期范围！"
 
       # Compute the loss, gradients, and update the model's parameters.
       optimizer.zero_grad()
