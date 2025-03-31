@@ -47,10 +47,16 @@ class SonnetGPT(nn.Module):
   def __init__(self, args):
     super().__init__()
     self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads)
+    # 直接从transformers里面去拿分词器，六
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
-    # By default, fine-tune the full model. TODO: this is maybe not idea.
+    # 将最终的输出last_hidden_state转化为词汇表的概率分布
+    self.vob_proj = nn.Linear(args.d, self.tokenizer.vocab_size)
+    self.softmax = nn.Softmax(dim=-1)
+
+    # By default, fine-tune the full model. 
+    # TODO: this is maybe not idea. 使用参数高效微调，LoRA等等
     for param in self.gpt.parameters():
       param.requires_grad = True
 
@@ -61,7 +67,10 @@ class SonnetGPT(nn.Module):
     not just the distribution over next tokens for the last token!
     """
     ### YOUR CODE HERE
-    raise NotImplementedError
+    # sequence_output (b,t,d)
+    # last_token (b,d)
+    sequence_output, last_token = self.gpt(input_ids, attention_mask).values()
+    return self.softmax(self.vob_proj(sequence_output))
 
 
   def get_device(self):
@@ -75,7 +84,7 @@ class SonnetGPT(nn.Module):
 
     TODO: this is probably not ideal. You can look at hugging face's model.generate(...) function for inspiration.
     In particular, generating multiple sequences and choosing the best with beam search is one avenue. Top_k is another;
-    there are many.
+    there are many. 下面生成句子的方式不是很好，去看huggiface是怎么实现的，可以尝试beam search或者top_k的方法
     """
     token_ids = encoding.to(self.get_device())
     attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.get_device())
