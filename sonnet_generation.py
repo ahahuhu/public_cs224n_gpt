@@ -15,7 +15,9 @@ import numpy as np
 import torch.nn.functional as F
 
 from torch import nn
+import torch.utils
 from torch.utils.data import DataLoader
+import torch.utils.data
 from tqdm import tqdm
 from transformers import GPT2Tokenizer
 from einops import rearrange
@@ -26,6 +28,8 @@ from datasets import (
 from models.gpt2 import GPT2Model
 
 from optimizer import AdamW
+
+from peft import get_peft_model, LoraConfig, TaskType
 
 TQDM_DISABLE = False
 
@@ -47,18 +51,18 @@ class SonnetGPT(nn.Module):
   def __init__(self, args):
     super().__init__()
     self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads)
-    # 直接从transformers里面去拿分词器，六
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
     # 将最终的输出last_hidden_state转化为词汇表的概率分布
     self.vob_proj = nn.Linear(args.d, self.tokenizer.vocab_size)
-    self.softmax = nn.Softmax(dim=-1)
 
     # By default, fine-tune the full model. 
     # TODO: this is maybe not idea. 使用参数高效微调，LoRA等等
-    for param in self.gpt.parameters():
-      param.requires_grad = True
+    for name, param in self.gpt.named_parameters():
+      # print(f"final_param name:{name}")
+      if "final_layer_norm" in name or "10" in name or "11" in name:
+        param.requires_grad = True
 
   def forward(self, input_ids, attention_mask):
     """
@@ -70,7 +74,7 @@ class SonnetGPT(nn.Module):
     # sequence_output (b,t,d)
     # last_token (b,d)
     sequence_output, last_token = self.gpt(input_ids, attention_mask).values()
-    return self.softmax(self.vob_proj(sequence_output))
+    return self.vob_proj(sequence_output)
 
 
   def get_device(self):
@@ -87,6 +91,7 @@ class SonnetGPT(nn.Module):
     there are many. 下面生成句子的方式不是很好，去看huggiface是怎么实现的，可以尝试beam search或者top_k的方法
     """
     token_ids = encoding.to(self.get_device())
+    # 1表示正常的输入 0表示pad的值
     attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.get_device())
 
 
@@ -121,6 +126,7 @@ class SonnetGPT(nn.Module):
         [attention_mask, torch.ones((1, 1), dtype=torch.int64).to(self.get_device())], dim=1
       )
 
+    # 去除前3个token，一般前3个token为特殊的token，比如说[CLS]、[BOS]
     generated_output = self.tokenizer.decode(token_ids[0].cpu().numpy().tolist())[3:]
     return token_ids, generated_output
 
@@ -138,6 +144,53 @@ def save_model(model, optimizer, args, filepath):
   torch.save(save_info, filepath)
   print(f"save the model to {filepath}")
 
+class early_stop():
+  def __init__(self, patient=5, delta=0):
+    """
+    Args:
+        patience (int): 连续多少个epoch没有改进后停止训练
+        delta (float): 验证损失的最小变化量(默认0)
+        path (str): 最佳模型保存路径
+    """
+    self.patient = patient
+    self.delta = delta
+    self.counter = 0
+    self.best_score = None
+    self.early_stop = False
+    self.val_loss_min = float('inf')
+  
+  def __call__(self, val_loss):
+    """
+    检查得分是否有变化
+    """
+    score = -val_loss
+    if self.best_score is None: 
+      self.best_score = score
+    elif self.best_score < score + self.delta:
+      self.best_score = score
+      self.counter = 0
+    else:
+      self.counter += 1
+      if self.counter > self.patient:
+        self.early_stop = True
+
+def evaluate(model, val_loader, device):
+  model.eval()
+  total_loss = 0
+  num_batches = 0
+  with torch.no_grad():
+    for batch in tqdm(val_loader, desc=f'val-batch:{num_batches}'):
+      b_ids, b_mask = batch["token_ids"], batch["attention_mask"]
+      b_ids = b_ids.to(device)
+      b_mask = b_mask.to(device)
+      logits = model(b_ids, b_mask)
+      logits = rearrange(logits[:, :-1].contiguous(), 'b t d -> (b t) d')
+      labels = b_ids[:, 1:].contiguous().flatten() 
+      loss = F.cross_entropy(logits, labels, reduction='mean')
+      total_loss += loss.item()
+      num_batches += 1
+  return total_loss/num_batches
+
 
 def train(args):
   """Train GPT-2 for paraphrase detection on the Quora dataset."""
@@ -146,9 +199,13 @@ def train(args):
   sonnet_dataset = SonnetsDataset(args.sonnet_path)
   sonnet_dataloader = DataLoader(sonnet_dataset, shuffle=True, batch_size=args.batch_size,
                                  collate_fn=sonnet_dataset.collate_fn)
+  val_dataset = SonnetsDataset(args.TRUE_held_out_sonnet_path)
+  val_dataloader = DataLoader(val_dataset, shuffle=False, batch_size=args.batch_size,
+                                 collate_fn=val_dataset.collate_fn)
+  
 
   # Create the held-out dataset: these only have the first 3 lines. Your job is to fill in the rest!
-  held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
+  # held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
 
   args = add_arguments(args)
   model = SonnetGPT(args)
@@ -156,6 +213,8 @@ def train(args):
 
   lr = args.lr
   optimizer = AdamW(model.parameters(), lr=lr)
+
+  es = early_stop()
 
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
@@ -176,6 +235,15 @@ def train(args):
       labels = b_ids[:, 1:].contiguous().flatten()  # Ignore the first token to compose the labels.
       loss = F.cross_entropy(logits, labels, reduction='mean')
       loss.backward()
+      
+      # Apply gradient clipping
+      max_norm = 10.0  # Set the maximum norm for the gradients
+      torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+
+      # for name, param in model.named_parameters():
+      #   if param.grad is not None:
+      #     print(f"Gradient norm for {name}: {param.grad.norm()}")
+
       optimizer.step()
 
       train_loss += loss.item()
@@ -183,15 +251,25 @@ def train(args):
 
     train_loss = train_loss / num_batches
     print(f"Epoch {epoch}: train loss :: {train_loss :.3f}.")
-    print('Generating several output sonnets...')
+    # print('Generating several output sonnets...')
     model.eval()
-    for batch in held_out_sonnet_dataset:
-      encoding = model.tokenizer(batch[1], return_tensors='pt', padding=True, truncation=True).to(device)
-      output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
-      print(f'{batch[1]}{output[1]}\n\n')
+    # 停止每次训练完都去看一下模型的输出
+    # for batch in held_out_sonnet_dataset:
+    #   encoding = model.tokenizer(batch[1], return_tensors='pt', padding=True, truncation=True).to(device)
+    #   output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
+    #   print(f'{batch[1]}{output[1]}\n\n')
 
     # TODO: consider a stopping condition to prevent overfitting on the small dataset of sonnets.
-    save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+    # 每4个epoch评估一次模型保存一次模型
+    if (epoch+1) % 5 == 0:
+      save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+
+      val_loss = evaluate(model, val_dataloader, device)
+      print(f"Epoch {epoch}: validation loss :: {val_loss:.3f}")
+      es(val_loss)
+      if es.early_stop is True:
+        print("模型多次训练后train_loss都没有下降,早停")
+        break
 
 
 @torch.no_grad()
@@ -230,6 +308,7 @@ def get_args():
 
   parser.add_argument("--sonnet_path", type=str, default="data/sonnets.txt")
   parser.add_argument("--held_out_sonnet_path", type=str, default="data/sonnets_held_out.txt")
+  parser.add_argument("--TRUE_held_out_sonnet_path", type=str, default="data/TRUE_sonnets_held_out_dev.txt")
   parser.add_argument("--sonnet_out", type=str, default="predictions/generated_sonnets.txt")
 
   parser.add_argument("--seed", type=int, default=11711)
@@ -242,9 +321,11 @@ def get_args():
                       default=0.9)
 
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
-  parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+  parser.add_argument("--lr", type=float, help="learning rate", default=1e-3)
   parser.add_argument("--model_size", type=str, help="The model size as specified on hugging face.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
+  # 继续从上次的地方开始训练模型
+  parser.add_argument("--continue_epoch", type=int,default=0)
 
   args = parser.parse_args()
   return args

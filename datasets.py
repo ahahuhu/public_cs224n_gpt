@@ -143,6 +143,7 @@ class SonnetsDataset(Dataset):
   def __len__(self):
     return len(self.sonnets)
 
+  # 使用dataset的返回值
   def __getitem__(self, idx):
     return (idx, self.sonnets[idx])
 

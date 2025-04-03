@@ -118,6 +118,8 @@ class GPT2Model(GPTPreTrainedModel):
     gpt_model = OpenAIGPT2Model.from_pretrained(model).eval()
     our_model = GPT2Model(GPT2Config(hidden_size=d, num_hidden_layers=l,num_attention_heads=num_heads,
                                      intermediate_size=d*3)).eval()
+    # for name, param in our_model.named_parameters():
+    #   print(name)
 
     # Load word and positional embeddings.
     our_model.word_embedding.load_state_dict(gpt_model.wte.state_dict())
@@ -126,12 +128,12 @@ class GPT2Model(GPTPreTrainedModel):
     for i in range(l):
       l = our_model.gpt_layers[i]
       # Remap the Q,K,V weights from a conv1d to 3 linear projections
-      l.self_attention.query.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, :d].T
-      l.self_attention.query.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][:d]
-      l.self_attention.key.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, d:d*2].T
-      l.self_attention.key.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][d:d*2]
-      l.self_attention.value.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, d*2:].T
-      l.self_attention.value.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][d*2:]
+      l.self_attention.query.linear.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, :d].T
+      l.self_attention.query.linear.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][:d]
+      l.self_attention.key.linear.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, d:d*2].T
+      l.self_attention.key.linear.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][d:d*2]
+      l.self_attention.value.linear.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, d*2:].T
+      l.self_attention.value.linear.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][d*2:]
 
       # Remap final dense layer in MHA.
       l.attention_dense.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_proj.weight'].T
