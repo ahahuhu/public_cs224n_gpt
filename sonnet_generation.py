@@ -58,10 +58,10 @@ class SonnetGPT(nn.Module):
     self.vob_proj = nn.Linear(args.d, self.tokenizer.vocab_size)
 
     # By default, fine-tune the full model. 
-    # TODO: this is maybe not idea. 使用参数高效微调，LoRA等等
+    # 使用参数高效微调，LoRA等等
     for name, param in self.gpt.named_parameters():
       # print(f"final_param name:{name}")
-      if "final_layer_norm" in name or "10" in name or "11" in name:
+      if "final_layer_norm" in name or "10" in name or "11" in name or "pooler_dense" in name:
         param.requires_grad = True
 
   def forward(self, input_ids, attention_mask):
@@ -129,6 +129,77 @@ class SonnetGPT(nn.Module):
     # 去除前3个token，一般前3个token为特殊的token，比如说[CLS]、[BOS]
     generated_output = self.tokenizer.decode(token_ids[0].cpu().numpy().tolist())[3:]
     return token_ids, generated_output
+
+  # @torch.no_grad()
+  # def generate(self, encoding, beam_width=5, max_length=128, temperature=0.7, top_p=0.9):
+  #     """
+  #     使用 Beam Search 生成文本。
+
+  #     参数:
+  #       - encoding: 输入的 token 编码，形状为 (1, seq_len)
+  #       - beam_width: beam 的数量（候选序列的数量）
+  #       - max_length: 最大生成长度
+  #       - temperature: 温度参数，用于调整 logits 的平滑度
+
+  #     返回:
+  #       - best_seq: 得分最高的 token 序列
+  #       - generated_output: 解码后的字符串，去除了前面的特殊 token（如 [CLS], [BOS]）
+  #     """
+  #     # 将输入移动到设备上
+  #     token_ids = encoding.to(self.get_device())
+  #     attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.get_device())
+
+  #     # 初始 beam: 每个 beam 包含 (当前 token_ids, 累计 log 概率, attention_mask)
+  #     beams = [(token_ids, 0.0, attention_mask)]
+  #     completed_sequences = []  # 用于保存生成结束（遇到 eos）的序列
+
+  #     # 循环生成每个 token
+  #     for _ in range(max_length):
+  #         new_beams = []
+  #         for seq, score, attn in beams:
+  #             # 如果当前序列已经生成结束符，则不再扩展
+  #             if seq[0, -1].item() == self.tokenizer.eos_token_id:
+  #                 completed_sequences.append((seq, score))
+  #                 continue
+
+  #             # 前向传播，获取当前序列的 logits
+  #             logits_sequence = self.forward(seq, attn)
+  #             logits_last = logits_sequence[:, -1, :] / temperature  # 除以温度参数
+
+  #             # 使用 log_softmax 转换为 log 概率
+  #             log_probs = torch.nn.functional.log_softmax(logits_last, dim=-1)
+
+  #             # 选择 top beam_width 的候选 token 及其 log 概率
+  #             top_log_probs, top_indices = torch.topk(log_probs, beam_width, dim=-1)
+
+  #             # 对当前 beam 的每个候选 token 生成新的序列
+  #             for i in range(beam_width):
+  #                 next_token = top_indices[0, i].unsqueeze(0).unsqueeze(0)  # 保持 (1,1) 的形状
+  #                 next_log_prob = top_log_probs[0, i].item()
+  #                 new_seq = torch.cat([seq, next_token], dim=1)
+  #                 new_score = score + next_log_prob  # 累计 log 概率
+  #                 new_attn = torch.cat([attn, torch.ones((1, 1), dtype=torch.int64).to(self.get_device())], dim=1)
+  #                 new_beams.append((new_seq, new_score, new_attn))
+
+  #         # 若所有 beam 都已完成，则退出循环
+  #         if not new_beams:
+  #             break
+
+  #         # 对所有扩展后的候选序列按累计分数排序，并保留得分最高的 beam_width 个
+  #         new_beams = sorted(new_beams, key=lambda x: x[1], reverse=True)[:beam_width]
+  #         beams = new_beams
+
+  #     # 将未终止的 beam 也加入完成序列中（可能未达到 eos 但达到 max_length）
+  #     for seq, score, _ in beams:
+  #         if seq[0, -1].item() != self.tokenizer.eos_token_id:
+  #             completed_sequences.append((seq, score))
+
+  #     # 从所有完成的序列中选择得分最高的，或者可以采用归一化处理（如 score / length）进行选择
+  #     best_seq, best_score = sorted(completed_sequences, key=lambda x: x[1] / x[0].shape[1], reverse=True)[0]
+
+  #     # 将 token id 序列转换为文本，并去掉最前面可能的特殊 token（例如[CLS]、[BOS]）
+  #     generated_output = self.tokenizer.decode(best_seq[0].cpu().numpy().tolist())[3:]
+  #     return best_seq, generated_output
 
 
 def save_model(model, optimizer, args, filepath):
@@ -259,10 +330,10 @@ def train(args):
     #   output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
     #   print(f'{batch[1]}{output[1]}\n\n')
 
-    # TODO: consider a stopping condition to prevent overfitting on the small dataset of sonnets.
+    # consider a stopping condition to prevent overfitting on the small dataset of sonnets.
     # 每4个epoch评估一次模型保存一次模型
     if (epoch+1) % 5 == 0:
-      save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+      save_model(model, optimizer, args, f'{epoch+1}_{args.filepath}')
 
       val_loss = evaluate(model, val_dataloader, device)
       print(f"Epoch {epoch}: validation loss :: {val_loss:.3f}")
@@ -289,7 +360,7 @@ def generate_submission_sonnets(args):
   for batch in held_out_sonnet_dataset:
     sonnet_id = batch[0]
     encoding = model.tokenizer(batch[1], return_tensors='pt', padding=False, truncation=True).to(device)
-    output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)[0][0]
+    output = model.generate(encoding['input_ids'],temperature=args.temperature,top_p=args.top_p)[0][0]
     decoded_output = model.tokenizer.decode(output)
     full_sonnet = f'{decoded_output}\n\n'
     generated_sonnets.append((sonnet_id, full_sonnet))
@@ -321,7 +392,7 @@ def get_args():
                       default=0.9)
 
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
-  parser.add_argument("--lr", type=float, help="learning rate", default=1e-3)
+  parser.add_argument("--lr", type=float, help="learning rate", default=1e-4)
   parser.add_argument("--model_size", type=str, help="The model size as specified on hugging face.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
   # 继续从上次的地方开始训练模型
