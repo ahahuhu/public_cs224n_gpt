@@ -59,6 +59,7 @@ class CausalSelfAttention(nn.Module):
     self.num_attention_heads = config.num_attention_heads
     self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
     self.all_head_size = self.num_attention_heads * self.attention_head_size
+    self.use_flash_attention = config.flash_attention
 
     # Initialize the linear transformation layers for key, value, query.
     self.query = LoRALinear(config.hidden_size,
@@ -112,6 +113,116 @@ class CausalSelfAttention(nn.Module):
     return output
     # raise NotImplementedError
 
+  def flash_attention(self, query, key, value, attention_mask, block_size=1024):
+      """
+      FlashAttention 实现 - 使用分块计算降低内存消耗
+  
+      query, key, value: [bs, num_heads, seq_len, head_dim]
+      attention_mask: [bs, 1, 1, seq_len]
+      """
+      batch_size, num_heads, seq_len, head_dim = query.shape
+  
+      # 初始化输出和归一化因子
+      output = torch.zeros_like(value)
+      normalizer = torch.zeros(batch_size, num_heads, seq_len, 1, device=query.device)
+  
+      # 为每个序列位置保存最大注意力分数，用于数值稳定性
+      m_i = torch.ones(batch_size, num_heads, seq_len, 1, device=query.device) * -1e4
+  
+      # 计算分块数量
+      num_blocks = (seq_len + block_size - 1) // block_size
+  
+      scale = 1.0 / math.sqrt(head_dim)
+  
+      # 创建因果掩码
+      causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=query.device)).bool()
+      causal_mask = causal_mask.view(1, 1, seq_len, seq_len)
+  
+      if attention_mask is not None:
+          # 转换掩码为布尔型（~表示取反）
+          attention_mask = ~(attention_mask.bool())
+          # 结合因果掩码和注意力掩码
+          mask = causal_mask & attention_mask
+      else:
+          mask = causal_mask
+  
+      # 逐块计算注意力
+      for j in range(num_blocks):
+          j_start = j * block_size
+          j_end = min(seq_len, (j + 1) * block_size)
+  
+          # 获取当前块的键和值
+          key_j = key[:, :, j_start:j_end, :]
+          value_j = value[:, :, j_start:j_end, :]
+  
+          # 对于每个查询块
+          for i in range(num_blocks):
+              i_start = i * block_size
+              i_end = min(seq_len, (i + 1) * block_size)
+  
+              # 获取当前查询块
+              query_i = query[:, :, i_start:i_end, :]
+  
+              # 计算当前块的注意力分数
+              scores_ij = torch.matmul(query_i, key_j.transpose(2, 3)) * scale
+  
+              # 应用掩码
+              mask_ij = mask[:, :, i_start:i_end, j_start:j_end]
+              scores_ij = scores_ij.masked_fill(~mask_ij, -float('inf'))
+  
+              # 获取当前范围的切片
+              output_slice = output[:, :, i_start:i_end, :].clone()
+              norm_slice = normalizer[:, :, i_start:i_end, :].clone()
+              m_i_slice = m_i[:, :, i_start:i_end, :].clone()
+  
+              # 更新每个位置的最大注意力分数
+              m_i_new = torch.maximum(m_i_slice, torch.max(scores_ij, dim=-1, keepdim=True)[0])
+  
+              # 计算局部softmax的分母项
+              exp_ij = torch.exp(scores_ij - m_i_new)
+  
+              # 重新缩放先前的输出和正则化因子
+              exp_scale = torch.exp(m_i_slice - m_i_new)
+              output_slice = output_slice * exp_scale
+              norm_slice = norm_slice * exp_scale
+  
+              # 更新输出
+              weighted_value = torch.matmul(exp_ij, value_j)
+              output_slice = output_slice + weighted_value
+  
+              # 更新正则化因子
+              sum_exp_ij = torch.sum(exp_ij, dim=-1, keepdim=True)
+              norm_slice = norm_slice + sum_exp_ij
+  
+              # 将更新后的值分配回原始张量 - 避免使用原地操作
+              output = torch.cat([
+                  output[:, :, :i_start, :],
+                  output_slice,
+                  output[:, :, i_end:, :]
+              ], dim=2)
+              
+              normalizer = torch.cat([
+                  normalizer[:, :, :i_start, :],
+                  norm_slice,
+                  normalizer[:, :, i_end:, :]
+              ], dim=2)
+              
+              m_i = torch.cat([
+                  m_i[:, :, :i_start, :],
+                  m_i_new,
+                  m_i[:, :, i_end:, :]
+              ], dim=2)
+  
+      # 归一化输出
+      output = output / (normalizer + 1e-6)  # 添加一个小的epsilon值避免除零错误
+  
+      # 应用 dropout
+      output = self.dropout(output)
+  
+      # 重排维度回到原始格式 [bs, seq_len, num_heads*head_dim]
+      output = rearrange(output, 'b h t d -> b t (h d)')
+  
+      return output
 
   def forward(self, hidden_states, attention_mask):
     """
@@ -127,5 +238,8 @@ class CausalSelfAttention(nn.Module):
     query_layer = self.transform(hidden_states, self.query)
     
     # Calculate the multi-head attention.
-    attn_value = self.attention(key_layer, query_layer, value_layer, attention_mask)
+    if self.use_flash_attention:
+       attn_value = self.flash_attention(query_layer, key_layer, value_layer, attention_mask)
+    else:
+      attn_value = self.attention(key_layer, query_layer, value_layer, attention_mask)
     return attn_value

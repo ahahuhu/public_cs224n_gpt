@@ -114,10 +114,10 @@ class GPT2Model(GPTPreTrainedModel):
 
 
   @classmethod
-  def from_pretrained(cls, model='gpt2', d=768, l=12, num_heads=12):
+  def from_pretrained(cls, model='gpt2', d=768, l=12, num_heads=12, flash_attention=False):
     gpt_model = OpenAIGPT2Model.from_pretrained(model).eval()
     our_model = GPT2Model(GPT2Config(hidden_size=d, num_hidden_layers=l,num_attention_heads=num_heads,
-                                     intermediate_size=d*3)).eval()
+                                     intermediate_size=d*3, flash_attention=flash_attention)).eval()
     # for name, param in our_model.named_parameters():
     #   print(name)
 

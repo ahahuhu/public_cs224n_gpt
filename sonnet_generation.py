@@ -29,7 +29,6 @@ from models.gpt2 import GPT2Model
 
 from optimizer import AdamW
 
-from peft import get_peft_model, LoraConfig, TaskType
 
 TQDM_DISABLE = False
 
@@ -50,7 +49,7 @@ class SonnetGPT(nn.Module):
 
   def __init__(self, args):
     super().__init__()
-    self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads)
+    self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads, flash_attention=args.flash_attention)
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -86,7 +85,7 @@ class SonnetGPT(nn.Module):
     """
     Generates an original sonnet using top-p sampling and softmax temperature.
 
-    TODO: this is probably not ideal. You can look at hugging face's model.generate(...) function for inspiration.
+    this is probably not ideal. You can look at hugging face's model.generate(...) function for inspiration.
     In particular, generating multiple sequences and choosing the best with beam search is one avenue. Top_k is another;
     there are many. 下面生成句子的方式不是很好，去看huggiface是怎么实现的，可以尝试beam search或者top_k的方法
     """
@@ -346,7 +345,7 @@ def train(args):
 @torch.no_grad()
 def generate_submission_sonnets(args):
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-  saved = torch.load(f'{args.epochs-1}_{args.filepath}', weights_only=False)
+  saved = torch.load(f'{args.epochs}_{args.filepath}', weights_only=False)
 
   model = SonnetGPT(saved['args'])
   model.load_state_dict(saved['model'])
@@ -397,6 +396,8 @@ def get_args():
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
   # 继续从上次的地方开始训练模型
   parser.add_argument("--continue_epoch", type=int,default=0)
+  # 有选择的使用attention
+  parser.add_argument("--flash_attention", action="store_true", help="是否启用FlashAttention为了加速和减少现存占用")
 
   args = parser.parse_args()
   return args
